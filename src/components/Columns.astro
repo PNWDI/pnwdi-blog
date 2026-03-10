@@ -1,0 +1,6 @@
+---
+const { count = 2 } = Astro.props;
+---
+<div style={`display: grid; grid-template-columns: repeat(${count}, 1fr); gap: 1rem;`}>
+  <slot />
+</div>
