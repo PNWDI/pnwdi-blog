@@ -34,7 +34,7 @@ const latestPosts = sortedPosts.slice(0, 3);
       {latestPosts.map(post => (
         <li>
           <time>{post.data.pubDate.toString().slice(0,10)}</time> - 
-          <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+          <a href={`/blog/${post.id}`}>{post.data.title}</a>
         </li>
       ))}
     </ul>
