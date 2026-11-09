@@ -1,0 +1,255 @@
+---
+title: "Applied Curiosity Ep. 1: Two ESP32s Talking over LoRa"
+description: "Companion notes for Episode 1 of Applied Curiosity: wiring two ESP32 boards to REYAX RYLR993 Lite radios, the full sketch, and how to read what comes back."
+pubDate: "Nov 9 2026"
+heroImage: "/lora-intro.jpg"
+---
+
+{/* TODO: Add the Episode 1 embed once the video is published, e.g.
+<iframe width="100%" style="aspect-ratio: 16 / 9;" src="https://www.youtube-nocookie.com/embed/VIDEO_ID" title="Applied Curiosity Episode 1: LoRa Basics" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+*/}
+
+[Watch Applied Curiosity on YouTube](https://www.youtube.com/@theappliedcuriosity)
+
+# Preface
+This is the companion post to the first episode of Applied Curiosity, our YouTube series where we get curious about something and then go build it. Episode 1 starts small: two microcontrollers, two LoRa radios, four wires each, and one sketch that gets them passing messages back and forth.
+
+The video moves quickly, and some of it plays at 20× speed. This post slows down and puts everything in one place: the parts, the wiring, the full code, and how to read what the radios send back.
+
+# Why start with LoRa?
+LoRa (short for *Long Range*) is a radio technology for sending small amounts of data a long way on very little power. It isn't Wi-Fi, so you won't be streaming anything over it. It's very good at the job we have in mind, though: sending a sensor reading every so often from the far side of the yard or beyond.
+
+That's where this series is headed. We're building a DIY weather station, with one node on the side of the house and another at the desk. Before we add any sensors, the two radios need to be able to talk to each other.
+
+# What you need
+- 2 × ESP32 development boards (ours use the ESP32-WROOM module)
+- 2 × REYAX RYLR993 Lite LoRa modules
+- Jumper wires, plus a small breadboard if you want one (it's optional, see below)
+- USB cables, and the Arduino IDE with ESP32 board support installed
+
+You'll hear us say "Arduino" a lot in the video. The boards themselves are **ESP32s**. Arduino is the IDE and framework we use to program them. Any ESP32 board with a free hardware serial port should work.
+
+# Wiring: just four wires
+The RYLR993 Lite is controlled with plain-text **AT commands** over a serial (UART) connection, so all it needs is power, ground, and a transmit/receive pair.
+
+| ESP32 | RYLR993 Lite | Notes |
+|---|---|---|
+| 3V3 | VDD | Power. This is a 3.3 V module, so use the 3.3 V pin, not 5V/VIN. |
+| GND | GND | Common ground. On the radio it's at the other end of the header from VDD. |
+| GPIO17 (TX) | RXD | ESP32 transmits, radio receives |
+| GPIO16 (RX) | TXD | Radio transmits, ESP32 receives |
+
+Pay attention to the last two rows. **TX always goes to RX**, and RX goes to TX. A transmit pin talking to another transmit pin is one of the most common reasons a serial device seems to be dead.
+
+In the video we built the two nodes in two different ways. One sits on a breadboard. The other uses four jumper wires that run straight from the radio to the ESP32's header pins. Both work the same way, so pick whichever suits your desk.
+
+# The code
+Both boards run the same sketch. Only two lines are different between them.
+
+## Configuration
+```cpp
+#define LORA_RX_PIN 16
+#define LORA_TX_PIN 17
+#define LORA_BAUD   9600
+
+#define MY_ADDRESS      1
+#define TARGET_ADDRESS  2
+
+// Must match the RYLR993 node exactly
+#define LORA_PARAMETER  "9,7,1,12"
+#define LORA_BAND       "915000000"
+
+#define SEND_INTERVAL_MS 3000
+```
+
+- **`LORA_RX_PIN` / `LORA_TX_PIN`**: the ESP32 has more than one hardware serial port. We use the second one, `HardwareSerial LoRaSerial(2)`, on GPIO16 and GPIO17. That leaves the main port free for the USB Serial Monitor.
+- **`LORA_BAUD`**: the speed the ESP32 uses to talk to the radio, which has to match the module's own setting. For the **RYLR993 Lite it's 9600**. The sketch was first written for the older RYLR896, which defaults to 115200, and that's why you see us change this value on screen. If you're using a different module or brand, **check the datasheet** and adjust the code to match.
+- **`MY_ADDRESS` / `TARGET_ADDRESS`**: this is the only difference between the two boards. Board one is `1` and targets `2`. Board two is `2` and targets `1`.
+- **`LORA_PARAMETER`**: four radio settings in one string. In order they are spreading factor `9`, bandwidth code `7` (125 kHz), coding rate code `1` (4/5), and preamble length `12`. A higher spreading factor gives you more range but slower transfers. **Both radios must use identical values**, or they won't hear each other.
+- **`LORA_BAND`**: 915 MHz, the license-free band used in North America. Europe uses 868 MHz instead. Use whichever band is legal where you are.
+- **`SEND_INTERVAL_MS`**: each board sends a message every 3 seconds.
+
+## Talking to the radio
+Everything you send to the radio goes through one helper function. It sends a command, followed by the carriage return and newline the module expects. Then it listens for up to half a second and prints whatever comes back:
+
+```cpp
+void sendATCommand(String cmd) {
+  LoRaSerial.print(cmd);
+  LoRaSerial.print("\r\n");
+  Serial.print(">> ");
+  Serial.println(cmd);
+
+  unsigned long start = millis();
+  while (millis() - start < 500) {
+    if (LoRaSerial.available()) {
+      String resp = LoRaSerial.readStringUntil('\n');
+      resp.trim();
+      if (resp.length() > 0) {
+        Serial.print("<< ");
+        Serial.println(resp);
+      }
+    }
+  }
+}
+```
+
+In the Serial Monitor, `>>` lines are what the ESP32 sent and `<<` lines are what the radio replied. This gives you a running transcript of the setup, which is the first place to look when something isn't working.
+
+## setup()
+`setup()` starts the USB serial connection at 115200 baud and the radio's serial connection at `LORA_BAUD`. Then it configures the radio with four commands:
+
+1. `AT`: a simple "are you there?" ping. The radio should reply `OK`.
+2. `AT+ADDRESS=1`: sets this node's address.
+3. `AT+PARAMETER=9,7,1,12`: sets the radio settings described above.
+4. `AT+BAND=915000000`: sets the frequency.
+
+## loop()
+Every three seconds, the loop builds a numbered message and sends it with `AT+SEND=<address>,<length>,<data>`. Between sends, it prints everything the radio says. The radio's acknowledgment (`OK`) is printed as `[MODULE]`, and any message that arrives from the other node (`+RCV=...`) is printed as `[RECEIVED]`.
+
+{/* NOTE: loop() never appears in full on screen in the video. The version below is rebuilt to match the Serial Monitor output shown in the episode. Replace it with the actual shared sketch, and add the download link here, before publishing. */}
+
+## The full sketch
+```cpp
+#define LORA_RX_PIN 16
+#define LORA_TX_PIN 17
+#define LORA_BAUD   9600
+
+#define MY_ADDRESS      1   // swap these two values
+#define TARGET_ADDRESS  2   // on the second board
+
+// Must match the RYLR993 node exactly
+#define LORA_PARAMETER  "9,7,1,12"
+#define LORA_BAND       "915000000"
+
+#define SEND_INTERVAL_MS 3000
+
+HardwareSerial LoRaSerial(2);
+unsigned long lastSendTime = 0;
+int messageCounter = 0;
+
+void sendATCommand(String cmd) {
+  LoRaSerial.print(cmd);
+  LoRaSerial.print("\r\n");
+  Serial.print(">> ");
+  Serial.println(cmd);
+
+  unsigned long start = millis();
+  while (millis() - start < 500) {
+    if (LoRaSerial.available()) {
+      String resp = LoRaSerial.readStringUntil('\n');
+      resp.trim();
+      if (resp.length() > 0) {
+        Serial.print("<< ");
+        Serial.println(resp);
+      }
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+
+  LoRaSerial.begin(LORA_BAUD, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+  delay(500);
+
+  Serial.println();
+  Serial.println("=== RYLR896 Node Setup ===");
+  Serial.print("My address: ");
+  Serial.println(MY_ADDRESS);
+  Serial.print("Target address: ");
+  Serial.println(TARGET_ADDRESS);
+  Serial.println();
+
+  sendATCommand("AT");
+  sendATCommand("AT+ADDRESS=" + String(MY_ADDRESS));
+  sendATCommand("AT+PARAMETER=" + String(LORA_PARAMETER));
+  sendATCommand("AT+BAND=" + String(LORA_BAND));
+
+  Serial.println();
+  Serial.println("=== Configuration complete, starting send/receive loop ===");
+  Serial.println();
+}
+
+void loop() {
+  // Every SEND_INTERVAL_MS, send a numbered message to the other node
+  if (millis() - lastSendTime >= SEND_INTERVAL_MS) {
+    lastSendTime = millis();
+    messageCounter++;
+
+    String payload = "FROM896-" + String(messageCounter);
+    LoRaSerial.print("AT+SEND=" + String(TARGET_ADDRESS) + "," +
+                     String(payload.length()) + "," + payload + "\r\n");
+
+    Serial.print("[SEND] ");
+    Serial.println(payload);
+  }
+
+  // Print everything the radio says: OK acknowledgments and +RCV= messages
+  while (LoRaSerial.available()) {
+    String line = LoRaSerial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    if (line.startsWith("+RCV=")) {
+      Serial.print("[RECEIVED] ");
+    } else {
+      Serial.print("[MODULE] ");
+    }
+    Serial.println(line);
+  }
+}
+```
+
+You'll see "896" in the banner and in the message text. Those are left over from the sketch's first version, written for the RYLR896. They're only labels and don't affect how it runs.
+
+# Uploading and running
+1. Upload the sketch to the first board with `MY_ADDRESS 1` and `TARGET_ADDRESS 2`.
+2. Swap the two values (`2` and `1`) and upload to the second board.
+3. Unplug the first board from the computer and power it from any USB supply. It starts sending as soon as it boots.
+4. Leave the second board plugged into the computer and open the Serial Monitor at **115200** baud.
+
+If everything is working, you'll see something like this:
+
+```text
+>> AT+BAND=915000000
+<< OK
+
+=== Configuration complete, starting send/receive loop ===
+
+[SEND] FROM896-1
+[MODULE] OK
+[RECEIVED] +RCV=1,10,FROM896-19,-108,5
+[SEND] FROM896-2
+[MODULE] OK
+[RECEIVED] +RCV=1,10,FROM896-20,-108,5
+```
+
+## Reading a received message
+`+RCV=1,10,FROM896-19,-108,5` has five fields:
+
+| Field | Value | Meaning |
+|---|---|---|
+| Address | `1` | Which node sent it |
+| Length | `10` | Payload size in bytes (`FROM896-19` is 10 characters) |
+| Data | `FROM896-19` | The message itself |
+| RSSI | `-108` | Received signal strength in dBm. The closer to zero, the stronger the signal. |
+| SNR | `5` | Signal-to-noise ratio in dB. Higher is cleaner. |
+
+Our own counter starts at 1, but the first message we receive is already number 19. That's because the other board had been powered on and sending for a while before this one booted. The two nodes don't need to start at the same time.
+
+# If it doesn't work
+- **The Serial Monitor shows gibberish.** Set the monitor to 115200 baud to match `Serial.begin(115200)`.
+- **You see `>> AT` but never `<< OK`.** The ESP32 can't hear the radio. Check that TX and RX are crossed over, that the radio has 3.3 V and ground, and that `LORA_BAUD` matches the module.
+- **A command returns an error.** The module didn't accept one of the values. The exact error text depends on the module, so look up the valid ranges for `AT+PARAMETER` and `AT+BAND` in its AT command guide.
+- **Both boards configure fine, but nothing ever shows up as `[RECEIVED]`.** Compare the two sketches. Make sure the addresses are swapped on the second board, and that `LORA_BAND` and `LORA_PARAMETER` are identical on both.
+
+# What's next
+This episode was about laying the groundwork, and there isn't much magic in it yet. In Episode 2 we'll add a temperature sensor, move one node outside, and watch the live outdoor temperature arrive at the desk. That's also where the RSSI and SNR numbers get interesting, once there are walls and distance between the two radios.
+
+# Thanks for watching (and reading)
+If you have suggestions for future episodes, or questions about this one, leave a comment on the video. We do our best to reply to every one. If you want to follow along as the weather station comes together, [subscribe on YouTube](https://www.youtube.com/@theappliedcuriosity).
+
+# References
+- [REYAX RYLR993 Lite on DigiKey](https://www.digikey.com/en/products/detail/reyax/RYLR993-Lite/22237834) (product page with the datasheet)
+- [Installing the ESP32 Arduino core](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html) (Espressif docs)
